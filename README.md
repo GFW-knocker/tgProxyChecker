@@ -57,13 +57,36 @@ Output:
 |---|---|---|---|
 | 16 bytes | abridged, tag `0xef` | 1-byte length | supported |
 | `dd` + 16 bytes | padded, tag `0xdd` | int32 length + padding | supported |
-| `ee` + 16 bytes + domain | faketls | padded inside TLS records | **not implemented** |
+| `ee` + 16 bytes + domain | faketls | padded inside TLS records | supported |
 
-`ee` secrets return a clear "not implemented yet" result rather than failing
-obscurely. Adding them means emitting a ClientHello whose 32-byte `random` field
-is `HMAC-SHA256(secret, hello)` with the timestamp mixed into its tail, then
-wrapping the obfuscated stream in TLS application-data records. That is byte
-construction over the same plain socket — it does **not** need `SSLSocket`.
+### faketls
+
+For `ee` secrets the whole exchange is wrapped in something that looks like a
+TLS session but is not one:
+
+```
+TCP
+ └─ faketls records (0x17 0x03 0x03 <len>)
+     └─ obfuscated2 (AES-CTR)
+         └─ MTProto framing
+             └─ req_pq_multi
+```
+
+The client sends a ClientHello whose 32-byte `random` field at offset 11 holds
+`HMAC-SHA256(secret, hello)` with the timestamp XORed into its last 4 bytes. The
+proxy replies with a ServerHello, a ChangeCipherSpec, and an application-data
+record, carrying the same HMAC over our digest plus its own response. Only then
+does the obfuscated2 stream start, wrapped in application-data records.
+
+No cipher negotiation, no key exchange, no certificate — so no `SSLSocket` and
+nothing to validate.
+
+The hello is built from a small op language ([TlsHello.kt](src/main/kotlin/org/tgproxycheck/TlsHello.kt))
+rather than a frozen blob, so cipher suites, extension order, and GREASE stay
+adjustable. It currently mimics Chrome: GREASE in the cipher list and
+extensions, a permuted extension order, and X25519 plus ML-KEM-768 key shares.
+**A fixed hello means a fixed JA3**, which is precisely what fingerprinting DPI
+looks for, so keep it varying.
 
 ## Android
 
@@ -113,9 +136,12 @@ a probe against a live proxy does that.
 
 ## Status
 
-Compiles clean, 19/19 tests pass, and the CLI has been smoke-tested against
-reserved addresses (parse errors, faketls rejection, connect timeout all report
-correctly).
+| Mode | State |
+|---|---|
+| plain / `dd` | verified against a live proxy |
+| faketls (`ee`) | compiles, unit-tested, **not yet probed against a live proxy** |
 
-**Not yet probed against a live proxy.** That is the remaining verification, and
-it is the one that would catch a wire-format mistake.
+The faketls tests cover hello structure (nested length scopes, digest offset,
+SNI placement), the X25519 point derivation, ML-KEM coefficient packing, and the
+record layer in both directions. They cannot catch a disagreement with a real
+proxy — only a live probe does that.

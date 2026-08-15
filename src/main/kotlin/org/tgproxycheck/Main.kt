@@ -16,7 +16,7 @@ fun main(args: Array<String>) {
         println("Usage: tgproxychecker <proxy-link | host:port:secret>...")
         println()
         println("Accepts https://t.me/proxy?... and tg://proxy?... links.")
-        println("Secrets may be hex or base64. faketls (ee...) is not supported yet.")
+        println("Secrets may be hex or base64, including faketls (ee...) secrets.")
         return
     }
 
