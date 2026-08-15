@@ -55,8 +55,41 @@ class ProxyCheckerTest {
             proxyThread.join(5_000)
 
             assertTrue(result.ok, "one good ping should still count as reachable")
-            assertEquals(1, result.rttMs.size)
-            assertTrue(result.error!!.contains("ping 2 of 2"), "unexpected error: ${result.error}")
+            assertEquals(2, result.rttMs.size, "every attempt gets an entry")
+            assertTrue(result.rttMs[0] >= 0, "first ping should have answered")
+            assertEquals(ProxyCheckResult.FAILED_PING, result.rttMs[1])
+            assertEquals(result.rttMs[0], result.bestRttMs)
+        }
+    }
+
+    @Test
+    fun `a failed first ping does not stop the second`() {
+        ServerSocket(0).use { server ->
+            // Ignores the first request, answers the second — a busy server.
+            val proxyThread = thread { runFakeProxy(server, replies = 2, ignoreFirst = true) }
+            val result = ProxyChecker(perAttemptTimeoutMs = 1_000, probeBudgetMs = 6_000)
+                .check(linkFor(server.localPort))
+            proxyThread.join(10_000)
+
+            assertTrue(result.ok, "second ping should have recovered: ${result.error}")
+            assertEquals(ProxyCheckResult.FAILED_PING, result.rttMs[0])
+            assertTrue(result.rttMs[1] >= 0, "second ping should have answered")
+        }
+    }
+
+    @Test
+    fun `a silent proxy reports both pings as failed`() {
+        ServerSocket(0).use { server ->
+            thread { runCatching { server.accept().use { Thread.sleep(30_000) } } }
+
+            // A wrong secret looks exactly like this: the proxy stays silent.
+            // Both pings are attempted, each capped at 1s here.
+            val result = ProxyChecker(perAttemptTimeoutMs = 1_000, probeBudgetMs = 6_000)
+                .check(linkFor(server.localPort))
+
+            assertFalse(result.ok)
+            assertEquals(listOf(-1L, -1L), result.rttMs)
+            assertTrue(result.toString().contains("FAILED, ping [-1, -1] ms"), result.toString())
         }
     }
 
@@ -96,7 +129,7 @@ class ProxyCheckerTest {
      * frame, derives the mirrored key pair, then answers [replies] requests with
      * a synthetic resPQ echoing the caller's nonce.
      */
-    private fun runFakeProxy(server: ServerSocket, replies: Int) {
+    private fun runFakeProxy(server: ServerSocket, replies: Int, ignoreFirst: Boolean = false) {
         runCatching {
             server.accept().use { socket ->
                 val input = socket.getInputStream()
@@ -113,10 +146,13 @@ class ProxyCheckerTest {
                 // zero, so ours does too.
                 dec.update(frame)
 
-                repeat(replies) {
+                repeat(replies) { index ->
                     val quarters = dec.update(input.readExact(1))[0].toInt() and 0xff
                     val request = dec.update(input.readExact(quarters * 4))
                     val nonce = request.copyOfRange(24, 40)
+
+                    // Simulate a busy server: read the request but never answer it.
+                    if (ignoreFirst && index == 0) return@repeat
 
                     val body = le32(MtProto.RES_PQ) + nonce + ByteArray(16) { 9 }
                     val message = le64(0L) + le64(0x5F00000000000004L) + le32(body.size) + body

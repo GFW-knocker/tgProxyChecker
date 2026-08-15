@@ -34,10 +34,14 @@ internal object MtProto {
     }
 
     /**
-     * Validates a reply. Throws with a specific reason on anything unexpected,
-     * so the caller can report *why* a proxy failed rather than just that it did.
+     * Validates the envelope and constructor, returning the nonce the server
+     * echoed. Throws with a specific reason on anything unexpected, so the
+     * caller can report *why* a proxy failed rather than just that it did.
+     *
+     * Returning the nonce rather than comparing it lets the caller recognise a
+     * late reply to an earlier, already-timed-out request.
      */
-    fun verifyResPq(packet: ByteArray, expectedNonce: ByteArray) {
+    fun readResPqNonce(packet: ByteArray): ByteArray {
         require(packet.size >= HEADER) { "short reply: ${packet.size} bytes" }
 
         val authKeyId = readLe64(packet, 0)
@@ -53,7 +57,12 @@ internal object MtProto {
             "expected resPQ (0x05162463), got 0x${constructor.toUInt().toString(16)}"
         }
 
-        val echoed = packet.copyOfRange(HEADER + 4, HEADER + 20)
+        return packet.copyOfRange(HEADER + 4, HEADER + 20)
+    }
+
+    /** Strict form: the reply must echo exactly [expectedNonce]. */
+    fun verifyResPq(packet: ByteArray, expectedNonce: ByteArray) {
+        val echoed = readResPqNonce(packet)
         require(echoed.contentEquals(expectedNonce)) {
             "nonce mismatch: sent ${expectedNonce.toHex()}, got ${echoed.toHex()}"
         }

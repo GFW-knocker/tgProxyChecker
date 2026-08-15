@@ -47,19 +47,46 @@ Secrets may be hex or base64. Multiple proxies are probed concurrently.
 Output:
 
 ```
-1.2.3.4:443 : 187 ms, 165 ms (connect 92 ms)
-9.8.7.6:443 : 210 ms, 194 ms (connect 88 ms, tls 143 ms)
-5.6.7.8:443 : FAILED after connect (connect 104 ms) - EOFException: closed after 0 of 4 bytes
+1.2.3.4:443 : SUCCESS, ping [152, 151] ms (connect 142 ms)
+9.8.7.6:443 : SUCCESS, ping [210, 194] ms (connect 88 ms, tls 205 ms)
+2.3.4.5:443 : SUCCESS, ping [163, -1] ms (connect 91 ms) - SocketTimeoutException: Read timed out
+5.6.7.8:443 : FAILED, ping [-1, -1] ms (connect 172 ms) - no reply
 ```
+
+`rttMs` always has one entry per attempted ping, with `-1` where that ping did
+not answer. `SUCCESS` means at least one came back.
 
 Each proxy is pinged twice over one connection. The first round trip carries the
 obfuscated2 init frame, so it runs slightly long; the second is the steady-state
-figure and the better one to rank by (`result.bestRttMs`). The handshake and both
-pings share a single 10-second budget measured from the moment TCP connects.
+figure and the better one to rank by (`result.bestRttMs`).
 
-A proxy that answers the first ping but not the second still counts as reachable
-— `ok` is true, `rttMs` holds what came back, and `error` says what stopped the
-rest.
+### Timeouts
+
+| Bound | Default | Applies to |
+|---|---|---|
+| `connectTimeoutMs` | 5s | the TCP connect |
+| `perAttemptTimeoutMs` | 5s | any single wait — faketls handshake, or one ping |
+| `probeBudgetMs` | 12s | handshake plus all pings, from the moment TCP connects |
+
+Whichever runs out first wins. Two full-length pings take 10s, leaving 2s of
+slack for the handshake, so the worst case is 5s to connect plus 12s of probing.
+
+A failed ping does **not** end the probe — a busy server may well answer the next
+one. To make that safe, every nonce that goes unanswered is remembered: if the
+server later replies to an abandoned request, the reply is recognised and
+discarded rather than mistaken for the current ping's. Without that bookkeeping a
+late answer would surface as a confusing nonce mismatch.
+
+### A wrong secret looks like a dead proxy
+
+This is by design and not something a client can improve on. With a wrong secret
+the init frame decrypts to garbage at the proxy, and it answers with **silence** —
+no error, no reset, just a held-open connection. Replying "bad secret" would
+confirm to any internet-wide scanner that the host is an MTProxy.
+
+So `FAILED, ping [-1, -1] ms` after two 5-second waits is the
+expected result for a wrong secret, a black-holed proxy, and a dead datacenter
+path alike. There is no signal that separates them.
 
 ## Secret formats
 
