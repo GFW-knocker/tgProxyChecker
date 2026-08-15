@@ -1,6 +1,40 @@
+# Build output
 build/
+out/
+
+# Gradle local state
 .gradle/
+gradle-app.setting
+!gradle-wrapper.jar
+!gradle-wrapper.properties
+
+# Kotlin compiler session/daemon state (Kotlin 2.x)
+.kotlin/
+
+# IDE
 .idea/
 *.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+
+# Local machine config — never publish, may hold SDK paths or signing details
 local.properties
+
+# Android, if these sources get pulled into an app module
+captures/
+.cxx/
+.externalNativeBuild/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Crash and profiling dumps
+*.hprof
+*.log
+
+# OS noise
 .DS_Store
+Thumbs.db
