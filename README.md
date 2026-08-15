@@ -47,9 +47,19 @@ Secrets may be hex or base64. Multiple proxies are probed concurrently.
 Output:
 
 ```
-1.2.3.4:443 : 187 ms (connect 92 ms)
-5.6.7.8:443 : FAILED after connect (104 ms) — EOFException: closed after 0 of 4 bytes
+1.2.3.4:443 : 187 ms, 165 ms (connect 92 ms)
+9.8.7.6:443 : 210 ms, 194 ms (connect 88 ms, tls 143 ms)
+5.6.7.8:443 : FAILED after connect (connect 104 ms) - EOFException: closed after 0 of 4 bytes
 ```
+
+Each proxy is pinged twice over one connection. The first round trip carries the
+obfuscated2 init frame, so it runs slightly long; the second is the steady-state
+figure and the better one to rank by (`result.bestRttMs`). The handshake and both
+pings share a single 10-second budget measured from the moment TCP connects.
+
+A proxy that answers the first ping but not the second still counts as reachable
+— `ok` is true, `rttMs` holds what came back, and `error` says what stopped the
+rest.
 
 ## Secret formats
 
@@ -95,14 +105,22 @@ The library sources use nothing outside `java.net`, `javax.crypto`,
 into an Android module and it compiles unchanged. Only `Main.kt` is
 JVM-CLI-specific; drop it.
 
-`ProxyChecker.check()` blocks on one socket and holds no shared state, so call
-it from `Dispatchers.IO`:
+Use the coroutine wrappers, which close the socket on cancellation:
 
 ```kotlin
-val results = withContext(Dispatchers.IO) {
-    proxies.map { async { ProxyChecker().check(it) } }.awaitAll()
-}
+val results = ProxyChecker().checkAll(proxies)   // or .checkCancellable(one)
 ```
+
+This matters more than it looks. `ProxyChecker.check()` blocks, and a blocking
+socket read ignores thread interruption — so a plain `async { check(it) }` that
+gets cancelled keeps its socket open for the full probe budget. With 40 proxies
+that strands the `Dispatchers.IO` pool for ten seconds after the user has already
+left the screen. `checkCancellable` parks a watchdog on `Dispatchers.Default` and
+closes the socket the moment cancellation is signalled.
+
+`Coroutines.kt` is the only file that needs kotlinx-coroutines. Delete it and
+the rest of the library still compiles, with `check(proxy) { socket -> ... }`
+available if you want to wire cancellation up yourself.
 
 Requires `android.permission.INTERNET`. Nothing else — raw sockets are not
 governed by Network Security Config or `usesCleartextTraffic`.
@@ -136,12 +154,20 @@ a probe against a live proxy does that.
 
 ## Status
 
-| Mode | State |
-|---|---|
-| plain / `dd` | verified against a live proxy |
-| faketls (`ee`) | compiles, unit-tested, **not yet probed against a live proxy** |
+All three secret types are verified against live proxies.
 
-The faketls tests cover hello structure (nested length scopes, digest offset,
-SNI placement), the X25519 point derivation, ML-KEM coefficient packing, and the
-record layer in both directions. They cannot catch a disagreement with a real
-proxy — only a live probe does that.
+32 unit tests cover hello structure (nested length scopes, digest offset, SNI
+placement), the X25519 point derivation, ML-KEM coefficient packing, framing
+round-trips, and the record layer in both directions.
+
+Four of them run against a simulated proxy built into the test suite — the
+server half of obfuscated2 is symmetric with the client half, so a fake proxy is
+short enough to live in a test. Those cover key derivation in both directions,
+the full req_pq/resPQ exchange, the two-ping loop, budget enforcement, and
+cancellation.
+
+The ClientHello was additionally verified byte-for-byte against the reference
+implementation: all 31 literal byte sequences match exactly. Worth knowing that
+a live probe cannot catch an error there — the proxy HMACs the hello without
+parsing it, so a wrong extension byte would pass every functional test while
+changing the JA3 fingerprint.

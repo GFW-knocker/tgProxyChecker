@@ -8,6 +8,10 @@ repositories {
 }
 
 dependencies {
+    // Used only by Coroutines.kt, which is optional — delete that file and this
+    // project has no dependencies beyond kotlin-stdlib.
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+
     testImplementation(kotlin("test"))
 }
 
